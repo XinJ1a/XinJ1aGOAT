@@ -181,56 +181,83 @@
   }
 
   /* ---------------- speech ---------------- */
-  let voices = [];
-  function loadVoices() { try { voices = speechSynthesis.getVoices(); } catch (e) { } }
-  if ('speechSynthesis' in window) {
+  const TTS = { ok: ('speechSynthesis' in window), voices: [], unlocked: false };
+  function loadVoices() { try { TTS.voices = speechSynthesis.getVoices() || []; } catch (e) { TTS.voices = []; } }
+  if (TTS.ok) {
     loadVoices();
-    speechSynthesis.onvoiceschanged = loadVoices;
+    try { speechSynthesis.addEventListener('voiceschanged', loadVoices); } catch (e) { speechSynthesis.onvoiceschanged = loadVoices; }
   }
-  let speakTimer = 0;
+
+  function pickVoice() {
+    const list = (TTS.voices && TTS.voices.length) ? TTS.voices : (TTS.ok ? (speechSynthesis.getVoices() || []) : []);
+    const en = list.filter(v => /^en/i.test(v.lang || ''));
+    return en.find(v => /en-GB/i.test(v.lang) && /(Natural|Sonia|Daniel|Serena|Google)/i.test(v.name))
+      || en.find(v => /en-GB/i.test(v.lang))
+      || en.find(v => /en-US/i.test(v.lang))
+      || en[0] || null;
+  }
 
   function makeUtterance(text) {
     const u = new SpeechSynthesisUtterance(String(text).replace(/-/g, ' '));
-    const en = voices.filter(v => /^en/i.test(v.lang));
-    const best = en.find(v => /en-GB/i.test(v.lang) && /(Google|Natural|Sonia|Daniel|Serena)/i.test(v.name))
-      || en.find(v => /en-GB/i.test(v.lang))
-      || en.find(v => /en-US/i.test(v.lang))
-      || en[0];
+    const best = pickVoice();
     if (best) { u.voice = best; u.lang = best.lang; } else u.lang = 'en-GB';
-    u.rate = 0.88; u.pitch = 1;
+    u.rate = 0.88; u.pitch = 1; u.volume = 1;
     return u;
   }
 
+  /* 兜底发音：Web Speech 用不了、被手机静音键吃掉、iOS 没解锁时，直接播词音频 */
+  const audios = {};
+  function playAudio(word) {
+    const key = String(word || '').toLowerCase().replace(/[^a-z' -]/g, '').trim();
+    if (!key) return;
+    try {
+      const a = audios[key] || (audios[key] = new Audio('https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(key) + '&type=2'));
+      a.currentTime = 0;
+      const p = a.play();
+      if (p && p.catch) p.catch(() => { });
+    } catch (e) { }
+  }
+
+  let speakSeq = 0;
   function speak(text) {
-    if (!('speechSynthesis' in window) || !text) return;
-    const t = String(text);
+    const t = String(text || '').trim();
+    if (!t) return;
+    const word = t.split(/\s+/)[0];
+    const seq = ++speakSeq;
+    if (!TTS.ok) { playAudio(word); return; }
     const fire = () => {
-      try {
-        speechSynthesis.resume();
-        speechSynthesis.speak(makeUtterance(t));
-      } catch (e) { }
+      if (seq !== speakSeq) return;
+      let started = false;
+      try { speechSynthesis.resume(); } catch (e) { }
+      const u = makeUtterance(t);
+      u.onstart = () => { started = true; };
+      u.onerror = () => { if (seq === speakSeq) playAudio(word); };
+      try { speechSynthesis.speak(u); } catch (e) { playAudio(word); return; }
+      /* 1 秒还没开口（智能手机静音键 / 语音引擎没就绪）就走音频兜底 */
+      setTimeout(() => {
+        if (seq !== speakSeq || started) return;
+        let sp = false;
+        try { sp = speechSynthesis.speaking; } catch (e) { }
+        if (!sp) playAudio(word);
+      }, 1000);
     };
-    clearTimeout(speakTimer);
     let busy = false;
     try { busy = speechSynthesis.speaking || speechSynthesis.pending; } catch (e) { }
     if (busy) {
-      // Chrome 里 cancel() 后立刻 speak() 会卡住/延迟，隔一帧再读
       try { speechSynthesis.cancel(); } catch (e) { }
-      speakTimer = setTimeout(fire, 40);
-    } else {
-      fire();
-    }
+      setTimeout(fire, 60);
+    } else fire();
   }
 
-  /* 第一次点击先把 TTS 引擎唤醒，避免第一次发音等半秒 */
-  let ttsWarm = false;
+  /* 第一次用户手势里真读一声，iOS 才会给语音合成解锁 */
   function warmupTTS() {
-    if (ttsWarm || !('speechSynthesis' in window)) return;
-    ttsWarm = true;
+    if (TTS.unlocked) return;
+    TTS.unlocked = true;
+    if (!TTS.ok) return;
     try {
       loadVoices();
-      const u = new SpeechSynthesisUtterance(' ');
-      u.volume = 0;
+      const u = makeUtterance('hello');
+      u.volume = 0.01;
       speechSynthesis.speak(u);
     } catch (e) { }
   }
@@ -969,6 +996,8 @@
       </div>
       <div class="row"><div class="l"><div class="a">自动发音</div><div class="b">出现单词和答题时朗读</div></div>
         <div class="switch ${S.set.autoAudio ? 'on' : ''}" data-act="toggle" data-k="autoAudio"></div></div>
+      <div class="row"><div class="l"><div class="a">发音测试</div><div class="b">点了能听到 schedule 就正常；还是没声音就关掉手机静音键或用 Chrome</div></div>
+        <button class="btn btn-ghost btn-sm" data-act="testVoice">试听</button></div>
       <div class="row"><div class="l"><div class="a">拼写模式</div><div class="b">复习时随机要求看中文拼单词</div></div>
         <div class="switch ${S.set.spell ? 'on' : ''}" data-act="toggle" data-k="spell"></div></div>
       <div class="row"><div class="l"><div class="a">复习上限 / 天</div><div class="b">到期复习词最多 ${S.set.dailyReview} 个</div></div>
@@ -1075,6 +1104,7 @@
         if (sess) { sess.extra = null; sess.done = true; render(); }
       } break;
       case 'speak': speak(t.dataset.w); break;
+      case 'testVoice': speak('schedule'); break;
       case 'open': openSheet(+t.dataset.id); break;
       case 'closeSheet': closeSheet(); break;
       case 'fav': {
