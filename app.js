@@ -1008,6 +1008,9 @@
     <div class="card">
       <div class="row"><div class="l"><div class="a">${SYNC.remote ? '手机 / 电脑同步' : '进度存储'}</div><div class="b">${SYNC.remote ? '进度存在本机服务里，两端共用 · <span id="syncState">' + esc(syncText()) + '</span>' : '这个版本进度只存在当前设备的浏览器里，换设备各自独立'}</div></div>
         ${SYNC.remote ? '<button class="btn btn-ghost btn-sm" data-act="sync">同步</button>' : ''}</div>
+      <div class="row"><div class="l"><div class="a">导出 / 导入进度</div><div class="b">换手机、换地址时用它把进度搬过去</div></div>
+        <button class="btn btn-ghost btn-sm" data-act="exportProg">导出</button>
+        <button class="btn btn-ghost btn-sm" data-act="importProg" style="margin-left:6px">导入</button></div>
       <div class="row"><div class="l"><div class="a">重置全部进度</div><div class="b">清空学习记录、生词本与统计</div></div>
         <button class="btn btn-ghost btn-sm" data-act="reset">重置</button></div>
       <div class="row"><div class="l"><div class="a">词库来源</div><div class="b">刘洪波《雅思词汇真经》22 章 · 共 ${WORDS.length} 词</div></div></div>
@@ -1017,6 +1020,52 @@
       心嘉大王 · 纯本地运行，数据保存在你的浏览器里<br>手机端建议「添加到主屏幕」当 App 用
     </div>
     <div style="height:10px"></div>`;
+  }
+
+  /* ---------- 进度导出 / 导入 ---------- */
+  function exportProg() {
+    const data = { app: 'xinjiadawang', v: 1, savedAt: now(), state: S };
+    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'xinjiadawang-progress-' + dayKey() + '.json';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    toast('已导出进度文件');
+  }
+
+  function applyImported(obj) {
+    const st = obj && obj.state ? obj.state : obj;
+    if (!st || typeof st !== 'object' || !st.prog) { toast('这个文件不是进度文件'); return false; }
+    const before = learnedCount();
+    S = mergeState(S, st);
+    save();
+    sess = null;
+    const after = learnedCount();
+    toast('已导入：新增 ' + Math.max(0, after - before) + ' 个单词，合计 ' + after + ' 个');
+    render();
+    return true;
+  }
+
+  function importProg() {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.json,application/json';
+    inp.style.display = 'none';
+    inp.addEventListener('change', () => {
+      const f = inp.files && inp.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        try { applyImported(JSON.parse(String(r.result))); }
+        catch (e) { toast('文件读不出来，可能选错了'); }
+      };
+      r.readAsText(f);
+      setTimeout(() => inp.remove(), 1000);
+    });
+    document.body.appendChild(inp);
+    inp.click();
   }
 
   /* ---------- sheet ---------- */
@@ -1125,6 +1174,8 @@
         S.set[k] = !S.set[k];
         save(); render();
       } break;
+      case 'exportProg': exportProg(); break;
+      case 'importProg': importProg(); break;
       case 'sync': toast('正在同步…'); pullRemote(true); break;
       case 'reset': {
         if (confirm('确认清空所有学习进度？此操作不可恢复。')) {
@@ -1208,6 +1259,18 @@
     navigator.serviceWorker.register('./sw.js').catch(() => { });
   }
   if (!location.hash) location.hash = '#/home';
+  /* 一次性导入：打开 #/import 会自动拉同目录的 seed.json 并合并进度 */
+  if (location.hash.indexOf('#/import') === 0) {
+    location.hash = '#/home';
+    toast('正在导入进度…');
+    fetch('./seed.json', { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) { toast('没找到导入文件，用「我的 → 导入」选文件'); return; }
+        applyImported(d);
+      })
+      .catch(() => toast('导入失败，用「我的 → 导入」选文件'));
+  }
   render();
   pullRemote(false);
 })();
